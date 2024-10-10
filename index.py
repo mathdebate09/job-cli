@@ -1,14 +1,12 @@
 import sys
 import os
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-
 import argparse
 import csv
 import json
 import random
 from google.generativeai import GenerativeModel, configure
 from dotenv import load_dotenv
-import PySimpleGUI as sg
+import PyPDF2
 
 class JobScheduler:
     def __init__(self):
@@ -17,8 +15,6 @@ class JobScheduler:
         self.configure_gemini()
         self.candidates = self.load_candidates()
         self.current_index = 0
-        self.current_candidate = None
-        self.current_analysis = None
 
     def load_settings(self):
         if os.path.exists('settings.json'):
@@ -43,26 +39,53 @@ class JobScheduler:
         if os.path.exists('candidates.csv'):
             with open('candidates.csv', 'r', newline='') as f:
                 reader = csv.DictReader(f)
-                candidates = list(reader)
+                for row in reader:
+                    if 'resume_path' in row:
+                        row['resume'] = self.extract_text_from_pdf(row['resume_path'])
+                    else:
+                        row['resume'] = ''
+                        row['resume_path'] = ''
+                    candidates.append(row)
         return candidates
 
     def save_candidates(self):
         with open('candidates.csv', 'w', newline='') as f:
-            fieldnames = ['name', 'age', 'resume', 'hireability_score', 'other_roles']
+            fieldnames = ['name', 'age', 'resume_path', 'hireability_score', 'other_roles']
             writer = csv.DictWriter(f, fieldnames=fieldnames)
             writer.writeheader()
-            writer.writerows(self.candidates)
+            for candidate in self.candidates:
+                row = {k: v for k, v in candidate.items() if k in fieldnames}
+                if 'resume_path' not in row:
+                    row['resume_path'] = ''
+                writer.writerow(row)
 
-    def add_candidate(self, name, age, resume):
+    def add_candidate(self, name, age, resume_path):
+        resume_text = self.extract_text_from_pdf(resume_path)
         self.candidates.append({
             'name': name,
             'age': age,
-            'resume': resume,
+            'resume': resume_text,
+            'resume_path': resume_path,
             'hireability_score': '',
             'other_roles': ''
         })
         self.save_candidates()
         print(f"Added {name} to the candidates list.")
+
+    def extract_text_from_pdf(self, pdf_path):
+        try:
+            with open(pdf_path, 'rb') as file:
+                reader = PyPDF2.PdfReader(file, strict=False)
+                text = ""
+                for page in reader.pages:
+                    try:
+                        text += page.extract_text() + "\n"
+                    except Exception as e:
+                        print(f"Warning: Could not extract text from a page in {pdf_path}: {e}")
+                return text.strip()
+        except Exception as e:
+            print(f"Warning: Could not read PDF file {pdf_path}: {e}")
+            return f"[Error reading PDF: {pdf_path}]"
 
     def process_next_candidate(self):
         if self.current_index < len(self.candidates):
@@ -114,27 +137,25 @@ class JobScheduler:
             candidate['hireability_score'] = hireability_score
             candidate['other_roles'] = ', '.join(other_roles)
             
-            self.current_candidate = candidate
-            self.current_analysis = analysis
             self.current_index += 1
             return candidate, analysis
         else:
-            self.current_candidate = None
-            self.current_analysis = None
             return None, "No more candidates to process."
 
-    def shortlist_candidate(self):
-        if self.current_candidate:
+    def shortlist_candidate(self, candidate):
+        if candidate:
             shortlist_file = 'shortlisted.csv'
             file_exists = os.path.isfile(shortlist_file)
             
             with open(shortlist_file, 'a', newline='') as f:
-                writer = csv.DictWriter(f, fieldnames=['name', 'age', 'resume', 'hireability_score', 'other_roles'])
+                fieldnames = ['name', 'age', 'resume_path', 'hireability_score', 'other_roles']
+                writer = csv.DictWriter(f, fieldnames=fieldnames)
                 if not file_exists:
                     writer.writeheader()
-                writer.writerow(self.current_candidate)
+                row = {k: v for k, v in candidate.items() if k in fieldnames}
+                writer.writerow(row)
             
-            return f"Candidate {self.current_candidate['name']} has been shortlisted."
+            return f"Candidate {candidate['name']} has been shortlisted."
         return "No candidate to shortlist."
 
     def skip_candidate(self):
@@ -145,42 +166,25 @@ class JobScheduler:
             return 'Moved to next candidate.'
         return 'No candidate to skip.'
 
-    def change_setting(self, setting, value):
-        if setting in self.settings:
-            self.settings[setting] = value
-            self.save_settings()
-            self.configure_gemini()
-            print(f"Updated {setting} to {value}")
-        else:
-            print(f"Invalid setting: {setting}")
-
-    def show_settings(self):
-        print("\nCurrent Settings:")
-        for key, value in self.settings.items():
-            print(f"{key}: {value}")
-
     def fill_dummy_data(self, num_candidates=10):
         dummy_names = ["Alice Smith", "Bob Johnson", "Charlie Brown", "Diana Lee", "Ethan Hunt", 
                        "Fiona Green", "George White", "Hannah Black", "Ian Gray", "Julia Red"]
-        dummy_resumes = [
-            "Experienced software engineer with expertise in Python and machine learning.",
-            "Marketing specialist with a track record of successful digital campaigns.",
-            "Financial analyst with strong skills in data analysis and forecasting.",
-            "Human resources professional specializing in talent acquisition and development.",
-            "Project manager with PMP certification and agile methodology experience.",
-            "Graphic designer proficient in Adobe Creative Suite and UI/UX design.",
-            "Sales representative with a history of exceeding quotas in B2B sales.",
-            "Data scientist with expertise in statistical analysis and predictive modeling.",
-            "Operations manager skilled in process improvement and team leadership.",
-            "Content writer with a background in SEO and digital content strategy."
+        dummy_resume_paths = [
+            "resumes/software_engineering.pdf",
+            "resumes/marketing_specialist.pdf",
+            "resumes/financial_analyst.pdf",
+            "resumes/hr_professional.pdf",
+            "resumes/project_manager.pdf",
         ]
 
         self.candidates = []
         for i in range(num_candidates):
+            resume_path = random.choice(dummy_resume_paths)
             self.candidates.append({
                 'name': random.choice(dummy_names),
                 'age': random.randint(22, 55),
-                'resume': random.choice(dummy_resumes),
+                'resume': self.extract_text_from_pdf(resume_path),
+                'resume_path': resume_path,
                 'hireability_score': '',
                 'other_roles': ''
             })
@@ -188,134 +192,51 @@ class JobScheduler:
         self.save_candidates()
         print(f"Added {num_candidates} dummy candidates to the CSV file.")
 
-def create_main_window(scheduler):
-    sg.theme('DarkTeal9')  # Set a professional-looking theme
-
-    # Define custom colors
-    background_color = sg.theme_background_color()
-    text_color = sg.theme_text_color()
-    button_color = ('white', '#007A7A')
-    
-    # Candidate Info Section
-    candidate_info = [
-        [sg.Text('Candidate Information', font=('Helvetica', 16), justification='center', expand_x=True)],
-        [sg.Text('Name:', size=(10, 1)), sg.Text('', size=(30, 1), key='-NAME-')],
-        [sg.Text('Age:', size=(10, 1)), sg.Text('', size=(30, 1), key='-AGE-')],
-        [sg.Text('Resume:', size=(10, 1))],
-        [sg.Multiline('', size=(60, 5), key='-RESUME-', disabled=True)]
-    ]
-
-    # Analysis Section
-    analysis_section = [
-        [sg.Text('AI Analysis', font=('Helvetica', 16), justification='center', expand_x=True)],
-        [sg.Multiline('', size=(60, 15), key='-ANALYSIS-', disabled=True)]
-    ]
-
-    # Action Buttons
-    action_buttons = [
-        [sg.Button('Process Next', size=(15, 1), button_color=button_color),
-         sg.Button('Shortlist', size=(15, 1), button_color=button_color),
-         sg.Button('Skip', size=(15, 1), button_color=button_color)]
-    ]
-
-    # Main Layout
-    layout = [
-        [sg.Text('Job Scheduler', font=('Helvetica', 24), justification='center', expand_x=True)],
-        [sg.Column(candidate_info, background_color=background_color)],
-        [sg.Column(analysis_section, background_color=background_color)],
-        [sg.Column(action_buttons, justification='center', expand_x=True, background_color=background_color)],
-        [sg.Button('Add Candidate', size=(15, 1), button_color=button_color),
-         sg.Button('Fill Dummy Data', size=(15, 1), button_color=button_color),
-         sg.Button('Exit', size=(15, 1), button_color=('white', '#B22222'))]
-    ]
-
-    return sg.Window('Job Scheduler', layout, finalize=True)
-
-def create_add_candidate_window():
-    sg.theme('DarkTeal9')
-
-    layout = [
-        [sg.Text('Add New Candidate', font=('Helvetica', 16), justification='center', expand_x=True)],
-        [sg.Text('Name:', size=(10, 1)), sg.Input(key='-NEW-NAME-', size=(30, 1))],
-        [sg.Text('Age:', size=(10, 1)), sg.Input(key='-NEW-AGE-', size=(30, 1))],
-        [sg.Text('Resume:', size=(10, 1))],
-        [sg.Multiline(key='-NEW-RESUME-', size=(50, 5))],
-        [sg.Button('Add', size=(10, 1)), sg.Button('Cancel', size=(10, 1))]
-    ]
-
-    return sg.Window('Add Candidate', layout, modal=True)
+    def show_settings(self):
+        print("\nCurrent Settings:")
+        for key, value in self.settings.items():
+            print(f"{key}: {value}")
 
 def main():
+    parser = argparse.ArgumentParser(description="Job Scheduler CLI")
+    parser.add_argument('action', choices=['process', 'add', 'fill_dummy', 'show_settings'], help='Action to perform')
+    parser.add_argument('--name', help='Candidate name (for add action)')
+    parser.add_argument('--age', type=int, help='Candidate age (for add action)')
+    parser.add_argument('--resume', help='Path to resume PDF (for add action)')
+    parser.add_argument('--num', type=int, default=10, help='Number of dummy candidates to add (for fill_dummy action)')
+
+    args = parser.parse_args()
+
     scheduler = JobScheduler()
-    main_window = create_main_window(scheduler)
-    add_candidate_window = None
 
-    # Process the first candidate immediately
-    update_main_window(main_window, *scheduler.process_next_candidate())
-
-    while True:
-        window, event, values = sg.read_all_windows()
-        
-        if event == sg.WINDOW_CLOSED or event == 'Exit':
-            if window == add_candidate_window:
-                add_candidate_window.close()
-                add_candidate_window = None
-            else:
+    if args.action == 'process':
+        while True:
+            candidate, analysis = scheduler.process_next_candidate()
+            if not candidate:
+                print("No more candidates to process.")
                 break
+            
+            print(f"\nCandidate: {candidate['name']}, Age: {candidate['age']}")
+            print(f"Analysis:\n{analysis}")
+            
+            choice = input("Enter 's' to shortlist, 'n' for next, or 'q' to quit: ").lower()
+            if choice == 's':
+                print(scheduler.shortlist_candidate(candidate))
+            elif choice == 'q':
+                break
+            # 'n' or any other input will move to the next candidate
 
-        if window == main_window:
-            if event == 'Process Next':
-                update_main_window(main_window, *scheduler.process_next_candidate())
+    elif args.action == 'add':
+        if args.name and args.age and args.resume:
+            scheduler.add_candidate(args.name, args.age, args.resume)
+        else:
+            print("Error: Name, age, and resume path are required for adding a candidate.")
 
-            elif event == 'Shortlist':
-                message = scheduler.shortlist_candidate()
-                sg.popup_ok(message)
-                update_main_window(main_window, *scheduler.process_next_candidate())
+    elif args.action == 'fill_dummy':
+        scheduler.fill_dummy_data(args.num)
 
-            elif event == 'Skip':
-                message = scheduler.skip_candidate()
-                sg.popup_ok(message)
-                update_main_window(main_window, *scheduler.process_next_candidate())
-
-            elif event == 'Add Candidate':
-                add_candidate_window = create_add_candidate_window()
-
-            elif event == 'Fill Dummy Data':
-                scheduler.fill_dummy_data()
-                sg.popup_ok('Dummy data added.')
-
-        if window == add_candidate_window:
-            if event == 'Add':
-                name = values['-NEW-NAME-']
-                age = values['-NEW-AGE-']
-                resume = values['-NEW-RESUME-']
-                if name and age and resume:
-                    scheduler.add_candidate(name, age, resume)
-                    sg.popup_ok(f'Added {name} to the candidates list.')
-                    add_candidate_window.close()
-                    add_candidate_window = None
-                else:
-                    sg.popup_error('Please fill in all fields.')
-
-            elif event == 'Cancel':
-                add_candidate_window.close()
-                add_candidate_window = None
-
-    if add_candidate_window:
-        add_candidate_window.close()
-    main_window.close()
-
-def update_main_window(window, candidate, analysis):
-    if candidate:
-        window['-NAME-'].update(candidate['name'])
-        window['-AGE-'].update(candidate['age'])
-        window['-RESUME-'].update(candidate['resume'])
-        window['-ANALYSIS-'].update(analysis)
-    else:
-        window['-NAME-'].update('')
-        window['-AGE-'].update('')
-        window['-RESUME-'].update('')
-        window['-ANALYSIS-'].update('No more candidates to process.')
+    elif args.action == 'show_settings':
+        scheduler.show_settings()
 
 if __name__ == "__main__":
     main()
